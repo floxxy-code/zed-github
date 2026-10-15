@@ -1,4 +1,3 @@
-
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
@@ -18,19 +17,24 @@ for name in GITHUB_TOKEN GITHUB_USERNAME GITHUB_OWNER REPO_NAME SSH_PUBLIC_KEY; 
     fi
 done
 
-# Validate repository path components.
-[[ "$GITHUB_OWNER" =~ ^[A-Za-z0-9-]+$ ]] ||
+if [[ ! "$GITHUB_OWNER" =~ ^[A-Za-z0-9-]+$ ]]; then
     die "GITHUB_OWNER is invalid."
+fi
 
-[[ "$REPO_NAME" =~ ^[A-Za-z0-9._-]+$ ]] ||
+if [[ ! "$REPO_NAME" =~ ^[A-Za-z0-9._-]+$ ]]; then
     die "REPO_NAME must be a repository name, not owner/repository."
+fi
 
-REPO_URL="https://github.com/${GITHUB_OWNER}/${REPO_NAME}.git"
+if [[ ! "$SSH_PUBLIC_KEY" =~ ^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp256|ecdsa-sha2-nistp384|ecdsa-sha2-nistp521)[[:space:]] ]]; then
+    die "SSH_PUBLIC_KEY does not look like a supported SSH public key."
+fi
+
 DEVELOPER_HOME="/home/developer"
+REPO_URL="https://github.com/${GITHUB_OWNER}/${REPO_NAME}.git"
 CREDENTIAL_DIR="${DEVELOPER_HOME}/.config/git"
 CREDENTIAL_FILE="${CREDENTIAL_DIR}/credentials"
 
-# Prepare SSH directories and authorised public key.
+# Prepare the developer account's SSH and Git configuration.
 install -d -m 700 -o developer -g developer \
     "${DEVELOPER_HOME}/.ssh" \
     "$CREDENTIAL_DIR"
@@ -38,20 +42,21 @@ install -d -m 700 -o developer -g developer \
 printf '%s\n' "$SSH_PUBLIC_KEY" \
     > "${DEVELOPER_HOME}/.ssh/authorized_keys"
 
-chown developer:developer \
-    "${DEVELOPER_HOME}/.ssh/authorized_keys"
-
+chown developer:developer "${DEVELOPER_HOME}/.ssh/authorized_keys"
 chmod 600 "${DEVELOPER_HOME}/.ssh/authorized_keys"
+
 unset SSH_PUBLIC_KEY
 
-# Configure a private Git credential file at runtime.
-# The token is never baked into the Docker image or Git remote URL.
+# Configure GitHub HTTPS authentication.
 umask 077
+
 printf 'https://%s:%s@github.com\n' \
-    "$GITHUB_USERNAME" "$GITHUB_TOKEN" > "$CREDENTIAL_FILE"
+    "$GITHUB_USERNAME" "$GITHUB_TOKEN" \
+    > "$CREDENTIAL_FILE"
 
 chown developer:developer "$CREDENTIAL_FILE"
 chmod 600 "$CREDENTIAL_FILE"
+
 unset GITHUB_TOKEN
 
 as_developer() {
@@ -67,7 +72,7 @@ as_developer git config --global \
 as_developer git config --global \
     user.email "${GIT_AUTHOR_EMAIL:-${GITHUB_USERNAME}@users.noreply.github.com}"
 
-# Clone the private repository without putting credentials in its URL.
+# Clone the configured private repository.
 if [[ -d /workspace/.git ]]; then
     log "Git repository already exists; keeping it."
 else
@@ -78,22 +83,26 @@ else
     log "Cloning ${GITHUB_OWNER}/${REPO_NAME}..."
 
     if ! as_developer git clone "$REPO_URL" /workspace; then
-        die "Git clone failed. Check token permissions, repository owner and repository name."
+        die "Git clone failed. Check the repository name and token permissions."
     fi
 fi
 
 as_developer git -C /workspace remote set-url origin "$REPO_URL"
 
-# Generate SSH host keys at runtime.
+# Generate SSH host keys and prepare the SSH daemon.
+mkdir -p /run/sshd
+chmod 0755 /run/sshd
 ssh-keygen -A
 
-# Configure the HTTP health endpoint on Render's assigned port.
+# Render supplies PORT for the public HTTP health endpoint.
 export PORT="${PORT:-10000}"
 
-[[ "$PORT" =~ ^[0-9]+$ ]] || die "PORT must be numeric."
-(( PORT >= 1 && PORT <= 65535 )) || die "PORT is out of range."
+if [[ ! "$PORT" =~ ^[0-9]+$ ]] || (( PORT < 1 || PORT > 65535 )); then
+    die "PORT must be a valid TCP port number."
+fi
 
-cat > /tmp/health_server.py <<'PY'
+# Create the HTTP health-check server.
+cat > /tmp/health_server.py <<'PYTHON'
 import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -118,14 +127,33 @@ class Handler(BaseHTTPRequestHandler):
 
 server = ThreadingHTTPServer(
     ("0.0.0.0", int(os.environ.get("PORT", "10000"))),
-    Handler,
+    Handler
 )
 server.serve_forever()
-PY
+PYTHON
 
+# Fail immediately if the Python standard library is incomplete.
+log "Checking Python HTTP server support..."
+
+python3 -c \
+    "from http.server import ThreadingHTTPServer; print('Python HTTP server OK')" \
+    || die "Python HTTP support is missing. Check the Dockerfile dependencies."
+
+# Start the public HTTP endpoint required by Render.
 log "Starting HTTP health server on port ${PORT}..."
-python3 /tmp/health_server.py &
 
-# Keep the SSH daemon in the foreground so Render tracks the service.
+python3 /tmp/health_server.py &
+HEALTH_PID=$!
+
+sleep 2
+
+if ! kill -0 "$HEALTH_PID" 2>/dev/null; then
+    die "HTTP health server failed to start."
+fi
+
+log "HTTP health server started successfully."
+
+# Keep SSH running as the main container process.
 log "Starting SSH daemon on port 22..."
+
 exec /usr/sbin/sshd -D -e
