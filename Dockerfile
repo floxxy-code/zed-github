@@ -1,16 +1,15 @@
-
 FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    bash \
-    openssh-server \
-    git \
-    ca-certificates \
-    python3-minimal \
-    passwd \
-    util-linux \
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        openssh-server \
+        git \
+        ca-certificates \
+        python3 \
+        passwd \
+        util-linux \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --shell /bin/bash developer \
     && mkdir -p /run/sshd /workspace \
