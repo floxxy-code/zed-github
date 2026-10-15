@@ -11,45 +11,42 @@ die() {
     exit 1
 }
 
-# Fail immediately instead of constructing a malformed URL.
+# Validate required Render environment variables.
 for name in GITHUB_TOKEN GITHUB_USERNAME GITHUB_OWNER REPO_NAME SSH_PUBLIC_KEY; do
-    [[ -n "${!name:-}" ]] ||
-        die "Required Render environment variable '$name' is missing or empty."
+    if [[ -z "${!name:-}" ]]; then
+        die "Missing required environment variable: $name"
+    fi
 done
 
-# Validate the repository path components.
+# Validate repository path components.
 [[ "$GITHUB_OWNER" =~ ^[A-Za-z0-9-]+$ ]] ||
-    die "GITHUB_OWNER must be a GitHub account or organization name."
+    die "GITHUB_OWNER is invalid."
 
 [[ "$REPO_NAME" =~ ^[A-Za-z0-9._-]+$ ]] ||
-    die "REPO_NAME must contain only the repository name, not owner/repo."
+    die "REPO_NAME must be a repository name, not owner/repository."
 
 REPO_URL="https://github.com/${GITHUB_OWNER}/${REPO_NAME}.git"
-
-CREDENTIAL_DIR="/home/developer/.config/git"
+DEVELOPER_HOME="/home/developer"
+CREDENTIAL_DIR="${DEVELOPER_HOME}/.config/git"
 CREDENTIAL_FILE="${CREDENTIAL_DIR}/credentials"
 
-mkdir -p /run/sshd /workspace
-
-# Configure key-only SSH access for the developer account.
+# Prepare SSH directories and authorised public key.
 install -d -m 700 -o developer -g developer \
-    /home/developer/.ssh "$CREDENTIAL_DIR"
+    "${DEVELOPER_HOME}/.ssh" \
+    "$CREDENTIAL_DIR"
 
 printf '%s\n' "$SSH_PUBLIC_KEY" \
-    > /home/developer/.ssh/authorized_keys
+    > "${DEVELOPER_HOME}/.ssh/authorized_keys"
 
-chown developer:developer /home/developer/.ssh/authorized_keys
-chmod 600 /home/developer/.ssh/authorized_keys
+chown developer:developer \
+    "${DEVELOPER_HOME}/.ssh/authorized_keys"
+
+chmod 600 "${DEVELOPER_HOME}/.ssh/authorized_keys"
 unset SSH_PUBLIC_KEY
 
-# Give the SSH account a random runtime-only password.
-# SSH password authentication is disabled in sshd_config.
-RANDOM_PASSWORD="$(head -c 48 /dev/urandom | base64 | tr -d '\n')"
-printf 'developer:%s\n' "$RANDOM_PASSWORD" | chpasswd
-unset RANDOM_PASSWORD
-
-# Store the HTTPS credential outside the repository.
-# This is a runtime file, not part of the Docker image.
+# Configure a private Git credential file at runtime.
+# The token is never baked into the Docker image or Git remote URL.
+umask 077
 printf 'https://%s:%s@github.com\n' \
     "$GITHUB_USERNAME" "$GITHUB_TOKEN" > "$CREDENTIAL_FILE"
 
@@ -57,9 +54,8 @@ chown developer:developer "$CREDENTIAL_FILE"
 chmod 600 "$CREDENTIAL_FILE"
 unset GITHUB_TOKEN
 
-# Run Git with the development user's HOME and configuration.
 as_developer() {
-    runuser -u developer -- env HOME=/home/developer "$@"
+    runuser -u developer -- env HOME="$DEVELOPER_HOME" "$@"
 }
 
 as_developer git config --global \
@@ -71,29 +67,31 @@ as_developer git config --global \
 as_developer git config --global \
     user.email "${GIT_AUTHOR_EMAIL:-${GITHUB_USERNAME}@users.noreply.github.com}"
 
-# Clone without embedding the token in the repository's remote URL.
+# Clone the private repository without putting credentials in its URL.
 if [[ -d /workspace/.git ]]; then
-    log "Repository already exists in /workspace; keeping it."
+    log "Git repository already exists; keeping it."
 else
     if find /workspace -mindepth 1 -maxdepth 1 -print -quit | grep -q .; then
-        die "/workspace is not empty but has no .git directory; refusing to delete files."
+        die "/workspace is not empty and is not a Git repository."
     fi
 
-    log "Cloning private repository ${GITHUB_OWNER}/${REPO_NAME}..."
+    log "Cloning ${GITHUB_OWNER}/${REPO_NAME}..."
 
-    as_developer git clone -- "$REPO_URL" /workspace
+    if ! as_developer git clone "$REPO_URL" /workspace; then
+        die "Git clone failed. Check token permissions, repository owner and repository name."
+    fi
 fi
 
-# Ensure origin contains only the public repository URL.
 as_developer git -C /workspace remote set-url origin "$REPO_URL"
 
-# Generate SSH host keys if they do not already exist.
+# Generate SSH host keys at runtime.
 ssh-keygen -A
 
-# Render's HTTP health listener must use its configured PORT.
+# Configure the HTTP health endpoint on Render's assigned port.
 export PORT="${PORT:-10000}"
 
 [[ "$PORT" =~ ^[0-9]+$ ]] || die "PORT must be numeric."
+(( PORT >= 1 && PORT <= 65535 )) || die "PORT is out of range."
 
 cat > /tmp/health_server.py <<'PY'
 import os
@@ -106,7 +104,6 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "text/plain; charset=utf-8")
         self.send_header("Content-Length", str(len(BODY)))
-        self.send_header("Connection", "close")
         self.end_headers()
         self.wfile.write(BODY)
 
@@ -114,19 +111,21 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "text/plain; charset=utf-8")
         self.send_header("Content-Length", str(len(BODY)))
-        self.send_header("Connection", "close")
         self.end_headers()
 
     def log_message(self, fmt, *args):
         pass
 
-ThreadingHTTPServer(
+server = ThreadingHTTPServer(
     ("0.0.0.0", int(os.environ.get("PORT", "10000"))),
-    Handler
-).serve_forever()
+    Handler,
+)
+server.serve_forever()
 PY
 
+log "Starting HTTP health server on port ${PORT}..."
 python3 /tmp/health_server.py &
 
-log "Starting SSH server with key-only authentication."
+# Keep the SSH daemon in the foreground so Render tracks the service.
+log "Starting SSH daemon on port 22..."
 exec /usr/sbin/sshd -D -e
