@@ -1,25 +1,30 @@
+
 FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     openssh-server \
-    curl \
-    unzip \
     git \
-    sudo \
-    netcat-openbsd \
-    && rm -rf /var/lib/apt/lists/*
-
-RUN mkdir /var/run/sshd \
-    && echo 'root:rootpassword123!' | chpasswd \
-    && sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config \
-    && sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config
+    ca-certificates \
+    python3-minimal \
+    passwd \
+    util-linux \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --create-home --shell /bin/bash developer \
+    && mkdir -p /run/sshd /workspace \
+    && chown developer:developer /workspace \
+    && sed -ri 's/^#?PermitRootLogin .*/PermitRootLogin no/' /etc/ssh/sshd_config \
+    && sed -ri 's/^#?PasswordAuthentication .*/PasswordAuthentication no/' /etc/ssh/sshd_config \
+    && sed -ri 's/^#?KbdInteractiveAuthentication .*/KbdInteractiveAuthentication no/' /etc/ssh/sshd_config \
+    && sed -ri 's/^#?PubkeyAuthentication .*/PubkeyAuthentication yes/' /etc/ssh/sshd_config
 
 WORKDIR /workspace
 
 COPY entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
 
-EXPOSE 80
+RUN chmod 0755 /entrypoint.sh
+
+EXPOSE 10000
+
 ENTRYPOINT ["/entrypoint.sh"]
