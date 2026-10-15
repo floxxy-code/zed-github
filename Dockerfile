@@ -27,7 +27,9 @@ RUN apt-get update \
     && sed -ri 's/^#?PasswordAuthentication .*/PasswordAuthentication no/' /etc/ssh/sshd_config \
     && sed -ri 's/^#?KbdInteractiveAuthentication .*/KbdInteractiveAuthentication no/' /etc/ssh/sshd_config \
     && sed -ri 's/^#?PubkeyAuthentication .*/PubkeyAuthentication yes/' /etc/ssh/sshd_config \
-    && printf '\nAllowUsers developer\n' >> /etc/ssh/sshd_config
+    && sed -ri 's/^#?UsePAM .*/UsePAM no/' /etc/ssh/sshd_config \
+    && grep -qE '^UsePAM ' /etc/ssh/sshd_config \
+    || printf '\nUsePAM no\n' >> /etc/ssh/sshd_config
 
 WORKDIR /workspace
 
