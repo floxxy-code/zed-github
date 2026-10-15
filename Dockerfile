@@ -21,6 +21,8 @@ RUN apt-get update \
     && rm -f /tmp/ngrok.tgz \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --shell /bin/bash developer \
+    && usermod --password '*' developer \
+    && usermod --unlock developer \
     && mkdir -p /run/sshd /workspace \
     && chown developer:developer /workspace \
     && sed -ri 's/^#?PermitRootLogin .*/PermitRootLogin no/' /etc/ssh/sshd_config \
@@ -28,8 +30,7 @@ RUN apt-get update \
     && sed -ri 's/^#?KbdInteractiveAuthentication .*/KbdInteractiveAuthentication no/' /etc/ssh/sshd_config \
     && sed -ri 's/^#?PubkeyAuthentication .*/PubkeyAuthentication yes/' /etc/ssh/sshd_config \
     && sed -ri 's/^#?UsePAM .*/UsePAM no/' /etc/ssh/sshd_config \
-    && grep -qE '^UsePAM ' /etc/ssh/sshd_config \
-    || printf '\nUsePAM no\n' >> /etc/ssh/sshd_config
+    && grep -q '^UsePAM no$' /etc/ssh/sshd_config
 
 WORKDIR /workspace
 
