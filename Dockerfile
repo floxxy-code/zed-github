@@ -23,8 +23,10 @@ WORKDIR /workspace
 
 COPY entrypoint.sh /entrypoint.sh
 
-RUN chmod 0755 /entrypoint.sh
+RUN sed -i 's/\r$//' /entrypoint.sh \
+    && sed -i '1s/^\xEF\xBB\xBF//' /entrypoint.sh \
+    && chmod 0755 /entrypoint.sh
 
 EXPOSE 10000
 
-ENTRYPOINT ["/entrypoint.sh"]
+ENTRYPOINT ["/bin/bash", "/entrypoint.sh"]
