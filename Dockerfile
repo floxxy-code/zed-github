@@ -4,6 +4,7 @@ FROM ubuntu:22.04
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    bash \
     openssh-server \
     git \
     ca-certificates \
@@ -17,7 +18,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && sed -ri 's/^#?PermitRootLogin .*/PermitRootLogin no/' /etc/ssh/sshd_config \
     && sed -ri 's/^#?PasswordAuthentication .*/PasswordAuthentication no/' /etc/ssh/sshd_config \
     && sed -ri 's/^#?KbdInteractiveAuthentication .*/KbdInteractiveAuthentication no/' /etc/ssh/sshd_config \
-    && sed -ri 's/^#?PubkeyAuthentication .*/PubkeyAuthentication yes/' /etc/ssh/sshd_config
+    && sed -ri 's/^#?PubkeyAuthentication .*/PubkeyAuthentication yes/' /etc/ssh/sshd_config \
+    && printf '\nAllowUsers developer\n' >> /etc/ssh/sshd_config
 
 WORKDIR /workspace
 
